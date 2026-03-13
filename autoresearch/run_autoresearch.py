@@ -217,6 +217,9 @@ def main():
         try:
             run_experiment(iter_num)
             iter_num += 1
+            if os.getenv("CI_SINGLE_RUN"):
+                print("CI Single Run mode detected. Exiting orchestration loop.")
+                break
             print("\nWaiting 10 seconds before next iteration...")
             time.sleep(10)
         except KeyboardInterrupt:

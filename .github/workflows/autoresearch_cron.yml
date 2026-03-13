@@ -33,10 +33,9 @@ jobs:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: |
         # In a CI environment we just want it to run one loop and exit
-        # We can pass an env flag or just let it time out if needed.
-        # Assuming run_autoresearch.py runs exactly one experiment when run via this flag:
         export CI_SINGLE_RUN=true
-        python autoresearch/run_autoresearch.py
+        cd autoresearch
+        python run_autoresearch.py
         
     - name: Commit New Model Weights (If Found)
       run: |
