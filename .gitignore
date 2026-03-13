@@ -1,0 +1,5 @@
+.env
+sp500_data/
+*.parquet
+*.csv
+autoresearch/.env

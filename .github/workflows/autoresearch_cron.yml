@@ -1,0 +1,56 @@
+name: Hourly Autoresearch Loop
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Runs at the top of every hour
+  workflow_dispatch:      # Allows manual triggering from GitHub UI
+
+jobs:
+  run_quant_agent:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install uv
+        uv pip install -r requirements.txt --system
+        
+    - name: Run Preparations (Data Ingestion & SPY Baseline)
+      run: |
+        python autoresearch/prepare.py
+        
+    - name: Run Autoresearch Orchestrator (1 Iteration)
+      env:
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      run: |
+        # In a CI environment we just want it to run one loop and exit
+        # We can pass an env flag or just let it time out if needed.
+        # Assuming run_autoresearch.py runs exactly one experiment when run via this flag:
+        export CI_SINGLE_RUN=true
+        python autoresearch/run_autoresearch.py
+        
+    - name: Commit New Model Weights (If Found)
+      run: |
+        git config --global user.name "Autoresearch Quant Bot"
+        git config --global user.email "bot@autoresearch.local"
+        
+        # Add any newly created saved_models folder and the appended CSV log
+        git add autoresearch/saved_models/ autoresearch/experiment_logs.csv autoresearch/train.py
+        
+        # Only commit and push if there are changes
+        if ! git diff-index --quiet HEAD; then
+          git commit -m "🤖 [Bot] Autonomous Quantitative Research Update"
+          git push
+        else
+          echo "No improvements found this hour. Nothing to commit."
+        fi
