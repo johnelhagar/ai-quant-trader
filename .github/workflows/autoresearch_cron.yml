@@ -21,8 +21,8 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install uv
-        uv pip install autoresearch/ --system
+        pip install torch --index-url https://download.pytorch.org/whl/cpu
+        pip install pandas numpy requests python-dotenv pyarrow
         
     - name: Run Autoresearch Orchestrator (1 Iteration)
       env:
