@@ -27,10 +27,6 @@ jobs:
         pip install uv
         uv pip install -r requirements.txt --system
         
-    - name: Run Preparations (Data Ingestion & SPY Baseline)
-      run: |
-        python autoresearch/prepare.py
-        
     - name: Run Autoresearch Orchestrator (1 Iteration)
       env:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
