@@ -5,6 +5,9 @@ on:
     - cron: '0 * * * *'  # Runs at the top of every hour
   workflow_dispatch:      # Allows manual triggering from GitHub UI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run_quant_agent:
     runs-on: ubuntu-latest
