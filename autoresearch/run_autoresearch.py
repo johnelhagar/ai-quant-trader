@@ -14,26 +14,49 @@ import shutil
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not OPENROUTER_API_KEY:
     print("WARNING: OPENROUTER_API_KEY not found in environment or .env file.")
     print("Please add it to the .env file.")
-    
-# Primary and Fallback Models
+
+# Primary and Fallback Models (via OpenRouter)
 PRIMARY_MODEL = "stepfun/step-3.5-flash:free"
 FALLBACK_MODEL = "google/gemini-2.5-flash-lite"
+# Direct Gemini API fallback model
+GEMINI_DIRECT_MODEL = "gemini-2.0-flash"
 
 LOG_FILE = "experiment_logs.csv"
 
+def query_gemini_direct(prompt, system_prompt=""):
+    """Call Google Gemini API directly as a last-resort fallback."""
+    if not GEMINI_API_KEY:
+        print("GEMINI_API_KEY not set. Cannot use direct Gemini fallback.")
+        return None
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_DIRECT_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    if system_prompt:
+        payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+
+    try:
+        response = requests.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        return result['candidates'][0]['content']['parts'][0]['text']
+    except Exception as e:
+        print(f"Error querying Gemini direct API: {e}")
+        return None
+
 def query_openrouter(prompt, system_prompt="", use_fallback=False):
     model = FALLBACK_MODEL if use_fallback else PRIMARY_MODEL
-    
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "HTTP-Referer": "https://github.com/karpathy/autoresearch",
         "X-Title": "Autoresearch Quant Agent"
     }
-    
+
     payload = {
         "model": model,
         "messages": [
@@ -41,7 +64,7 @@ def query_openrouter(prompt, system_prompt="", use_fallback=False):
             {"role": "user", "content": prompt}
         ]
     }
-    
+
     try:
         response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60)
         response.raise_for_status()
@@ -50,11 +73,11 @@ def query_openrouter(prompt, system_prompt="", use_fallback=False):
     except Exception as e:
         print(f"Error querying {model}: {e}")
         if not use_fallback:
-            print(f"Attempting fallback to {FALLBACK_MODEL}...")
+            print(f"Attempting fallback to {FALLBACK_MODEL} via OpenRouter...")
             return query_openrouter(prompt, system_prompt, use_fallback=True)
         else:
-            print("Fallback also failed.")
-            return None
+            print("OpenRouter fallback also failed. Trying direct Gemini API...")
+            return query_gemini_direct(prompt, system_prompt)
 
 def extract_code(text):
     """Extract python code from markdown code blocks."""

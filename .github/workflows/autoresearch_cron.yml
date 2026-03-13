@@ -5,19 +5,16 @@ on:
     - cron: '0 * * * *'  # Runs at the top of every hour
   workflow_dispatch:      # Allows manual triggering from GitHub UI
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   run_quant_agent:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
-      
+      uses: actions/checkout@v6
+
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.10'
         
@@ -30,6 +27,7 @@ jobs:
     - name: Run Autoresearch Orchestrator (1 Iteration)
       env:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: |
         # In a CI environment we just want it to run one loop and exit
