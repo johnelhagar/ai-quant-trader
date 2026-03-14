@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 import time
@@ -102,11 +103,17 @@ def run_experiment(iteration_num):
     with open("train.py", "r") as f:
          current_train_code = f.read()
          
-    # Read history to give context
+    # Read history to give context — last 20 runs so the LLM doesn't repeat failed approaches
     history = ""
     if os.path.exists(LOG_FILE):
-        history_df = pd.read_csv(LOG_FILE).tail(5) # Give the last 5 experiments as context
-        history = "\nRecent Experiment History:\n" + history_df.to_string()
+        logs_df = pd.read_csv(LOG_FILE)
+        history_df = logs_df.tail(20)
+        history = "\nRecent Experiment History (last 20 runs):\n" + history_df.to_string()
+        # Also surface the single best run so the LLM knows the current champion
+        valid_logs = logs_df[(logs_df['Status'] == 'Completed') & (logs_df['val_max_drawdown'] <= 0.15)]
+        if not valid_logs.empty:
+            best_row = valid_logs.loc[valid_logs['val_excess_return'].idxmax()]
+            history += f"\n\nCurrent Best Run (champion to beat):\n{best_row.to_string()}"
          
     # 2. Formulate Prompt
     system_prompt = "You are an expert Quantitative Machine Learning Researcher."
@@ -136,10 +143,17 @@ def run_experiment(iteration_num):
         return False
         
     new_code = extract_code(llm_response)
-    
+
+    # Validate syntax before touching train.py
+    try:
+        ast.parse(new_code)
+    except SyntaxError as e:
+        print(f"Syntax error in generated code: {e}. Skipping iteration.")
+        return False
+
     # Backup current best train.py
     shutil.copyfile("train.py", "train.py.best")
-    
+
     # Write new experiment
     with open("train.py", "w") as f:
         f.write(new_code)
@@ -228,20 +242,25 @@ def run_experiment(iteration_num):
 def main():
     print("Starting Autonomous Quant Researcher Loop...")
     print(f"Primary Model: {PRIMARY_MODEL} | Fallback: {FALLBACK_MODEL}")
-    
+
     iter_num = 1
     # Check what iteration we are on
     if os.path.exists(LOG_FILE):
-         logs = pd.read_csv(LOG_FILE)
-         if not logs.empty:
-             iter_num = logs['Iteration'].max() + 1
-             
+        logs = pd.read_csv(LOG_FILE)
+        if not logs.empty:
+            iter_num = logs['Iteration'].max() + 1
+
+    # Wall-clock budget: exit after 50 min so the CI job has time to commit before GitHub's 6h limit
+    CI_TIME_BUDGET = 50 * 60
+    loop_start = time.time()
+
     while True:
         try:
             run_experiment(iter_num)
             iter_num += 1
-            if os.getenv("CI_SINGLE_RUN"):
-                print("CI Single Run mode detected. Exiting orchestration loop.")
+            elapsed = time.time() - loop_start
+            if elapsed >= CI_TIME_BUDGET:
+                print(f"CI time budget reached ({elapsed/60:.1f} min). Exiting to commit results.")
                 break
             print("\nWaiting 10 seconds before next iteration...")
             time.sleep(10)

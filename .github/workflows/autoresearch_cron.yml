@@ -28,16 +28,15 @@ jobs:
         pip install torch --index-url https://download.pytorch.org/whl/cpu
         pip install pandas numpy requests python-dotenv pyarrow
         
-    - name: Run Autoresearch Orchestrator (1 Iteration)
+    - name: Run Autoresearch Orchestrator (~50 min / ~10 iterations)
       env:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: |
-        # In a CI environment we just want it to run one loop and exit
-        export CI_SINGLE_RUN=true
+        # Run for up to 50 minutes to maximise iterations per CI job (10x speedup vs 1 iteration)
         cd autoresearch
-        python run_autoresearch.py
+        timeout 3000 python run_autoresearch.py || true
         
     - name: Commit New Model Weights (If Found)
       continue-on-error: true

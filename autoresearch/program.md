@@ -18,11 +18,20 @@ You must measure your success on these two target metrics logged at the end of t
 2. **`val_max_drawdown` (Minimize - Constraint)**: Must be less than `0.15` (15%). If your strategy beats the market but routinely bombs with massive portfolio losses from the peak, it is too risky to deploy. 
 
 ## Permitted Research Avenues
-Everything in `train.py` is yours to modify to achieve these KPIs. Here are research directions:
-- **Architecture**: Change the vanilla Multi-Layer Perceptron into an RNN, Transformer, or swap PyTorch for XGBoost/LightGBM.
-- **Hyperparameters**: Tune Learning Rates, Batch Sizes, Epochs, Dropout, Layer normalization.
-- **Loss Functions**: MSE is naïve. Try writing a custom loss function that optimizes the structural ranking (Pairwise Loss) or directly correlates to Sharpe Ratio.
-- **Regularization**: Add L1/L2 penalties. 
+Everything in `train.py` is yours to modify to achieve these KPIs. Research directions **ranked by expected impact**:
+
+1. **Loss Functions (HIGHEST IMPACT)**: MSE is naïve — it optimizes prediction accuracy for every stock equally, but you only care about correctly ranking the top stocks. Replace MSE with:
+   - A **Pairwise Ranking Loss** (penalize when a lower-return stock ranks above a higher-return stock in your predictions)
+   - A **Spearman Rank Correlation Loss** (directly maximize rank correlation between predictions and actual returns per day)
+   - A **Direct Sharpe Ratio Loss** (construct mini-portfolios from each batch and maximize their risk-adjusted return)
+
+2. **Portfolio Concentration (`TOP_K_LONG`)**: The constant `TOP_K_LONG = 20` controls how many stocks are held per day. Experiment with values from 5 (very concentrated, high alpha potential) to 50 (diversified, lower risk). This is a highly tunable lever.
+
+3. **Architecture**: Change the vanilla Multi-Layer Perceptron into an RNN, Transformer, or swap PyTorch for XGBoost/LightGBM.
+
+4. **Hyperparameters**: Tune Learning Rates, Batch Sizes, Epochs, Dropout, Layer normalization.
+
+5. **Regularization**: Add L1/L2 penalties.
 
 ## Restrictions
 1. **DO NOT** edit `prepare.py`. It is the source of truth for avoiding look-ahead bias.

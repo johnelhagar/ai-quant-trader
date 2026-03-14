@@ -65,14 +65,17 @@ def run_quant_experiment():
     
     model = AlphaNet(input_dim=X_train.shape[1]).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     criterion = nn.MSELoss()
-    
+
     print(f"Starting Training for Max {EPOCHS} epochs ({TIMEOUT_SECONDS}s limit)")
-    
+
     # 2. Training Loop with Timeout
     model.train()
     best_val_excess_return = float('-inf')
     best_max_drawdown = float('inf')
+    best_epoch_excess = float('-inf')
+    best_epoch_drawdown = float('inf')
     
     for epoch in range(EPOCHS):
         if time.time() - start_time > TIMEOUT_SECONDS:
@@ -90,8 +93,15 @@ def run_quant_experiment():
             optimizer.step()
             
             total_loss += loss.item()
-            
-        # 3. Validation Portfolio Simulation
+
+        scheduler.step()
+
+        # 3. Validation Portfolio Simulation — run every 5 epochs to save time budget
+        if (epoch + 1) % 5 != 0 and epoch != EPOCHS - 1:
+            print(f"Epoch {epoch+1:02d} | Train MSE: {total_loss/len(train_loader):.4f}")
+            model.train()
+            continue
+
         model.eval()
         with torch.no_grad():
             val_preds = model(X_val.to(device)).cpu().numpy()
@@ -105,25 +115,24 @@ def run_quant_experiment():
         for date, daily_df in val_meta.groupby('Date'):
             # Extract models positive predictions (Filter out negative expectations)
             positive_signals = daily_df[daily_df['Prediction'] > 0.0].copy()
-            
+
+            # Concentrate portfolio to TOP_K_LONG highest-conviction stocks
+            if len(positive_signals) > TOP_K_LONG:
+                positive_signals = positive_signals.nlargest(TOP_K_LONG, 'Prediction')
+
             if len(positive_signals) == 0:
                  # Market is entirely bearish, go 100% Cash (0% Return)
                  daily_returns.append(0.0)
                  dates.append(date)
                  continue
                  
-            # Dynamic Weighting: Weights are proportional to the magnitude of the model's positive integer conviction
+            # Dynamic Weighting: proportional to prediction magnitude
+            # If total conviction > 1.0: normalize to 100% invested. Otherwise keep as raw weights (partial cash).
             total_conviction = positive_signals['Prediction'].sum()
-            positive_signals['Weight'] = positive_signals['Prediction'] / total_conviction
-            
-            # Cap the total leverage to 1.0. If the model is extremely uncertain and predicting tiny returns
-            # across the board, total_conviction might be < 1.0, meaning it naturally allocates the rest to Cash.
             if total_conviction > 1.0:
-                 # Normalizes down to 100% fully invested
-                 pass 
+                positive_signals['Weight'] = positive_signals['Prediction'] / total_conviction
             else:
-                 # Keep weights as the raw predictions (partial cash holding)
-                 positive_signals['Weight'] = positive_signals['Prediction']
+                positive_signals['Weight'] = positive_signals['Prediction']
                  
             # Calculate the daily weighted return of the allocated stocks
             portfolio_return = (positive_signals['Weight'] * positive_signals['Target_Return_10d']).sum()
@@ -141,15 +150,14 @@ def run_quant_experiment():
         else:
             pf_df['Benchmark_Return'] = 0.0
             
-        # KPI Calculations
-        pf_df['Excess_Return'] = pf_df['Portfolio_Return'] - pf_df['Benchmark_Return']
-        total_portfolio_return = (pf_df['Portfolio_Return']).sum() # Using sum of 10-day distinct intervals approximation
-        total_benchmark_return = (pf_df['Benchmark_Return']).sum()
-        
+        # KPI Calculations — use compound returns for accuracy over the 2-year val period
+        total_portfolio_return = (1 + pf_df['Portfolio_Return']).prod() - 1
+        total_benchmark_return = (1 + pf_df['Benchmark_Return']).prod() - 1
+
         val_excess_return = total_portfolio_return - total_benchmark_return
-        
-        # Drawdown Calculation (Approximate cumulative sum for drawdown peaks)
-        pf_df['Cum_Ret'] = pf_df['Portfolio_Return'].cumsum()
+
+        # Drawdown Calculation on compound cumulative curve
+        pf_df['Cum_Ret'] = (1 + pf_df['Portfolio_Return']).cumprod() - 1
         pf_df['Peak'] = pf_df['Cum_Ret'].cummax()
         pf_df['Drawdown'] = pf_df['Cum_Ret'] - pf_df['Peak']
         val_max_drawdown = pf_df['Drawdown'].min() # Negative number
@@ -161,13 +169,21 @@ def run_quant_experiment():
         if val_excess_return > best_val_excess_return and abs_drawdown <= 0.15:
             best_val_excess_return = val_excess_return
             best_max_drawdown = abs_drawdown
+            best_epoch_excess = val_excess_return
+            best_epoch_drawdown = abs_drawdown
             torch.save(model.state_dict(), 'best_model.pt')
         
         model.train()
         
+    # If no epoch met the drawdown constraint, report last-epoch values so the orchestrator
+    # can still log the run (it will be rejected by the accept/reject logic, not by parse failure)
+    if best_epoch_excess == float('-inf'):
+        best_epoch_excess = val_excess_return
+        best_epoch_drawdown = abs(val_max_drawdown)
+
     print("\n[FINAL RESULTS]")
-    print(f"val_excess_return={val_excess_return:.4f}")
-    print(f"val_max_drawdown={abs(val_max_drawdown):.4f}") # Make absolute for easier read
+    print(f"val_excess_return={best_epoch_excess:.4f}")
+    print(f"val_max_drawdown={best_epoch_drawdown:.4f}")
 
 if __name__ == '__main__':
     run_quant_experiment()
