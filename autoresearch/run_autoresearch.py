@@ -21,10 +21,15 @@ if not OPENROUTER_API_KEY:
     print("WARNING: OPENROUTER_API_KEY not found in environment or .env file.")
     print("Please add it to the .env file.")
 
-# Primary and Fallback Models (via OpenRouter)
-PRIMARY_MODEL = "stepfun/step-3.5-flash:free"
-FALLBACK_MODEL = "google/gemini-2.5-flash-lite"
-# Direct Gemini API fallback model
+# Model fallback chain: try DeepSeek free models first, then other free models, then direct Gemini
+OPENROUTER_MODELS = [
+    "deepseek/deepseek-chat:free",         # DeepSeek V3 — fast, strong at code
+    "deepseek/deepseek-r1:free",           # DeepSeek R1 — reasoning model
+    "tngtech/deepseek-r1t-chimera:free",   # R1+V3 merged
+    "stepfun/step-3.5-flash:free",         # StepFun fallback
+    "google/gemini-2.5-flash-lite",        # Gemini via OpenRouter
+]
+# Direct Gemini API as last-resort fallback
 GEMINI_DIRECT_MODEL = "gemini-2.0-flash"
 
 LOG_FILE = "experiment_logs.csv"
@@ -33,7 +38,7 @@ def query_gemini_direct(prompt, system_prompt=""):
     """Call Google Gemini API directly as a last-resort fallback."""
     if not GEMINI_API_KEY:
         print("GEMINI_API_KEY not set. Cannot use direct Gemini fallback.")
-        return None
+        return None, None
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_DIRECT_MODEL}:generateContent?key={GEMINI_API_KEY}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -44,41 +49,43 @@ def query_gemini_direct(prompt, system_prompt=""):
         response = requests.post(url, json=payload, timeout=60)
         response.raise_for_status()
         result = response.json()
-        return result['candidates'][0]['content']['parts'][0]['text']
+        return result['candidates'][0]['content']['parts'][0]['text'], f"gemini-direct/{GEMINI_DIRECT_MODEL}"
     except Exception as e:
         print(f"Error querying Gemini direct API: {e}")
-        return None
+        return None, None
 
-def query_openrouter(prompt, system_prompt="", use_fallback=False):
-    model = FALLBACK_MODEL if use_fallback else PRIMARY_MODEL
-
+def query_llm(prompt, system_prompt=""):
+    """Try each model in the fallback chain. Returns (response_text, model_used) tuple."""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "HTTP-Referer": "https://github.com/karpathy/autoresearch",
         "X-Title": "Autoresearch Quant Agent"
     }
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-    }
+    for model in OPENROUTER_MODELS:
+        print(f"  Trying {model}...")
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        try:
+            response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=120)
+            response.raise_for_status()
+            result = response.json()
+            text = result['choices'][0]['message']['content']
+            if text:
+                print(f"  Success with {model}")
+                return text, model
+        except Exception as e:
+            print(f"  Failed {model}: {e}")
+            continue
 
-    try:
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
-        result = response.json()
-        return result['choices'][0]['message']['content']
-    except Exception as e:
-        print(f"Error querying {model}: {e}")
-        if not use_fallback:
-            print(f"Attempting fallback to {FALLBACK_MODEL} via OpenRouter...")
-            return query_openrouter(prompt, system_prompt, use_fallback=True)
-        else:
-            print("OpenRouter fallback also failed. Trying direct Gemini API...")
-            return query_gemini_direct(prompt, system_prompt)
+    # All OpenRouter models failed — try direct Gemini API
+    print("All OpenRouter models failed. Trying direct Gemini API...")
+    return query_gemini_direct(prompt, system_prompt)
 
 def extract_code(text):
     """Extract python code from markdown code blocks."""
@@ -136,11 +143,13 @@ def run_experiment(iteration_num):
     
     # 3. Get LLM Proposal
     print("Querying LLM for new hypothesis...")
-    llm_response = query_openrouter(prompt, system_prompt)
-    
+    llm_response, model_used = query_llm(prompt, system_prompt)
+
     if not llm_response:
-        print("Failed to get response from LLMs. Skipping iteration.")
+        print("Failed to get response from all LLMs. Skipping iteration.")
         return False
+
+    print(f"Using model: {model_used}")
         
     new_code = extract_code(llm_response)
 
@@ -191,6 +200,7 @@ def run_experiment(iteration_num):
     log_entry = {
          "Iteration": iteration_num,
          "Timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+         "Model": model_used,
          "Status": status,
          "val_excess_return": val_excess_return,
          "val_max_drawdown": val_max_drawdown,
@@ -241,7 +251,7 @@ def run_experiment(iteration_num):
 
 def main():
     print("Starting Autonomous Quant Researcher Loop...")
-    print(f"Primary Model: {PRIMARY_MODEL} | Fallback: {FALLBACK_MODEL}")
+    print(f"Model chain: {' -> '.join(OPENROUTER_MODELS)} -> gemini-direct/{GEMINI_DIRECT_MODEL}")
 
     iter_num = 1
     # Check what iteration we are on

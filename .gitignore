@@ -2,4 +2,5 @@
 sp500_data/
 *.parquet
 *.csv
+!autoresearch/experiment_logs.csv
 autoresearch/.env

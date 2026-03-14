@@ -44,8 +44,9 @@ jobs:
         git config --global user.name "Autoresearch Quant Bot"
         git config --global user.email "bot@autoresearch.local"
 
-        # Add any newly created saved_models folder and the appended CSV log
-        git add autoresearch/experiment_logs.csv autoresearch/train.py
+        # Add files only if they exist
+        [ -f autoresearch/experiment_logs.csv ] && git add autoresearch/experiment_logs.csv || true
+        git add autoresearch/train.py
         [ -d autoresearch/saved_models ] && git add autoresearch/saved_models/ || true
 
         # Only commit and push if there are changes
