@@ -44,7 +44,8 @@ jobs:
         git config --global user.email "bot@autoresearch.local"
         
         # Add any newly created saved_models folder and the appended CSV log
-        git add --ignore-unmatch autoresearch/saved_models/ autoresearch/experiment_logs.csv autoresearch/train.py
+        git add autoresearch/experiment_logs.csv autoresearch/train.py
+        [ -d autoresearch/saved_models ] && git add autoresearch/saved_models/ || true
         
         # Only commit and push if there are changes
         if ! git diff-index --quiet HEAD; then
