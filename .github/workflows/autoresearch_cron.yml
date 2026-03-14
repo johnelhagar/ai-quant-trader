@@ -20,7 +20,8 @@ jobs:
       uses: actions/setup-python@v6
       with:
         python-version: '3.10'
-        
+        cache: 'pip'
+
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
@@ -39,16 +40,18 @@ jobs:
         python run_autoresearch.py
         
     - name: Commit New Model Weights (If Found)
+      continue-on-error: true
       run: |
         git config --global user.name "Autoresearch Quant Bot"
         git config --global user.email "bot@autoresearch.local"
-        
+
         # Add any newly created saved_models folder and the appended CSV log
         git add autoresearch/experiment_logs.csv autoresearch/train.py
         [ -d autoresearch/saved_models ] && git add autoresearch/saved_models/ || true
-        
+
         # Only commit and push if there are changes
         if ! git diff-index --quiet HEAD; then
+          git pull --rebase origin main
           git commit -m "🤖 [Bot] Autonomous Quantitative Research Update"
           git push
         else
