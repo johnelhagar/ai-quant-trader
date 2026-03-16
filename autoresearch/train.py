@@ -166,7 +166,7 @@ def run_quant_experiment():
         
         # Save absolute best model weights meeting criteria
         abs_drawdown = abs(val_max_drawdown)
-        if val_excess_return > best_val_excess_return and abs_drawdown <= 0.15:
+        if val_excess_return > best_val_excess_return and abs_drawdown <= 0.08:
             best_val_excess_return = val_excess_return
             best_max_drawdown = abs_drawdown
             best_epoch_excess = val_excess_return

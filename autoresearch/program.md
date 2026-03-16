@@ -33,34 +33,69 @@ You must measure your success on these two target metrics logged at the end of t
 1. **`val_excess_return` (Maximize - Primary Objective)**: The gap between your portfolio's cumulative 10-day returns and the S&P 500 (`SPY`) benchmark. If this is negative, your model loses to a passive index fund and is useless. Beat the market.
 2. **`val_max_drawdown` (Minimize - Constraint)**: Must be less than `0.08` (8%). CAN SLIM's "M" rule is your primary tool here — the model should learn to raise cash when macro conditions deteriorate, avoiding large drawdowns entirely.
 
-## Permitted Research Avenues
-Everything in `train.py` is yours to modify to achieve these KPIs. Research directions **ranked by expected impact**:
+## You Have FULL FREEDOM
+Everything in `train.py` is yours to rewrite from scratch. You are not limited to tweaking the existing code — you can replace it entirely. Be bold. Make multiple changes at once if they complement each other.
 
-1. **Loss Functions (HIGHEST IMPACT)**: MSE is naïve — it optimizes prediction accuracy for every stock equally, but CAN SLIM only cares about correctly identifying the top growth leaders. Replace MSE with:
-   - A **Pairwise Ranking Loss** (penalize when a laggard stock ranks above a leader in your predictions — directly implements the L factor)
-   - A **Spearman Rank Correlation Loss** (directly maximize rank correlation between predictions and actual returns per day)
-   - A **Direct Sharpe Ratio Loss** (construct mini-portfolios from each batch and maximize their risk-adjusted return — naturally penalizes drawdown)
-   - A **CAN SLIM-weighted Loss** (weight training samples by how many CAN SLIM factors they satisfy — stocks with strong C+A+N+L should have higher loss weight)
+## 1. Algorithm Selection (HIGHEST IMPACT — try different ones!)
+The baseline uses a simple MLP neural network. **You should try completely different algorithms:**
+- **Gradient Boosting** (use `sklearn.ensemble.GradientBoostingRegressor` or `HistGradientBoostingRegressor` — fast and powerful for tabular data)
+- **Random Forest** (`sklearn.ensemble.RandomForestRegressor` — robust, handles interactions naturally)
+- **Ridge/Lasso Regression** (`sklearn.linear_model.Ridge` — simple but can be surprisingly effective with good features)
+- **Support Vector Regression** (`sklearn.svm.SVR` — good for finding nonlinear boundaries)
+- **Stacking Ensembles** (`sklearn.ensemble.StackingRegressor` — combine multiple models for better predictions)
+- **Neural Networks with custom architectures** — PyTorch gives you full flexibility:
+  - **Transformer Encoder**: Self-attention over the feature vector to learn feature interactions automatically. Use `nn.TransformerEncoderLayer` with 2-4 heads.
+  - **LSTM/GRU**: If you reshape features into a sequence (e.g., group by feature category), recurrent nets can capture sequential dependencies.
+  - **Residual Networks**: Deep MLPs with skip connections (`x + F(x)`) to enable training of 10+ layer networks without vanishing gradients.
+  - **Attention-based Feature Selection**: Learn which features matter most per sample using a soft attention mechanism (`softmax(Wh)` over features).
+  - **TabNet-style architecture**: Sequential attention for tabular data — selects features at each decision step.
+  - **Mixture of Experts (MoE)**: Route different market regimes to specialized sub-networks via a gating function.
+  - **Variational/Bayesian layers**: Use `nn.Dropout` at inference time (MC Dropout) to estimate prediction uncertainty and size positions by confidence.
+- **Two-stage models**: First classify market regime (bull/bear), then predict returns within regime
+- **Hybrid models**: Use sklearn for feature selection/preprocessing, then PyTorch for the final predictor
 
-2. **Feature Engineering in the Model**: Create derived CAN SLIM signals inside `train.py` during training:
-   - **Earnings Momentum**: Interaction features between `Surprise(%)` and `Return_5d` (earnings beat + price momentum = classic CAN SLIM buy)
-   - **Trend Confirmation**: Binary signal for price > MA_50 > MA_200 (golden cross regime)
-   - **Market Regime Filter**: Use macro features (`FedFundsRate`, `10YrTreasury`, `CPI`) to create a regime indicator that scales position sizes down in risk-off environments
+Available libraries: `torch`, `pandas`, `numpy`, `sklearn` (scikit-learn). Do NOT use xgboost or lightgbm unless wrapped in try/except with sklearn fallback.
 
-3. **Portfolio Concentration (`TOP_K_LONG`)**: The constant `TOP_K_LONG = 20` controls how many stocks are held per day. CAN SLIM favors concentrated portfolios of 5-10 high-conviction leaders. Experiment with values from 5 (very concentrated, high alpha) to 20 (moderate diversification). Going above 20 dilutes the CAN SLIM edge.
+## 2. Feature Engineering (CREATE new features from existing data!)
+The raw features are loaded as tensors. You can and should create derived features:
+- **Interaction features**: Multiply/divide pairs of features (e.g., earnings surprise × momentum)
+- **Polynomial features**: Square or cube key features to capture nonlinearity
+- **Cross-sectional ranks**: Rank each feature across all stocks on each day (relative strength)
+- **Z-scores**: Normalize features per day to highlight outliers
+- **Rolling/lagged features**: If you reconstruct time info, create rolling means or momentum signals
+- **Feature selection**: Use correlation analysis, mutual information, or L1 regularization to find the most predictive features and drop noise
+- **PCA/dimensionality reduction**: Compress features into principal components
 
-4. **Architecture**: Change the vanilla Multi-Layer Perceptron to better capture CAN SLIM patterns:
-   - **Attention mechanisms** can learn which CAN SLIM factors matter most per stock
-   - **XGBoost/LightGBM** handles the interaction features (earnings x momentum) naturally
-   - **Ensemble**: Combine a neural net for complex patterns with gradient boosting for feature interactions
+## 3. Loss Functions (align training with the actual goal)
+MSE optimizes prediction accuracy for ALL stocks equally, but you only care about ranking the TOP stocks correctly:
+- **Pairwise Ranking Loss**: Penalize when a laggard outranks a leader in predictions (implements CAN SLIM's L factor)
+- **Spearman Rank Correlation Loss**: Directly maximize rank correlation between predictions and returns
+- **Direct Sharpe Ratio Loss**: Build mini-portfolios per batch and maximize Sharpe ratio
+- **Asymmetric Loss**: Penalize false positives (predicting gains that turn to losses) more heavily than false negatives
+- **Huber Loss**: Robust to outliers, better than MSE for noisy financial data
+- **Quantile Regression**: Predict confidence intervals, use upper quantile for aggressive selection
 
-5. **Hyperparameters**: Tune Learning Rates, Batch Sizes, Epochs, Dropout, Layer normalization.
+## 4. Portfolio Construction (how predictions become weights)
+The default uses simple conviction-proportional weighting. Try:
+- **Softmax weighting**: `weights = softmax(predictions / temperature)` — temperature controls concentration
+- **Volatility-adjusted sizing**: Scale weights inversely to predicted/historical volatility
+- **Market regime gating**: Build a binary classifier on macro features — go 100% cash when bearish
+- **Risk parity**: Equal risk contribution from each position
+- **Dynamic TOP_K**: Adjust concentration based on model confidence (fewer stocks when very confident)
+- The constant `TOP_K_LONG = 20` is tunable. CAN SLIM favors 5-10 high-conviction leaders.
 
-6. **Regularization**: Add L1/L2 penalties to encourage the model to focus on the most predictive CAN SLIM factors.
+## 5. Training Strategy
+- **Cross-validation with time-series split**: More robust model selection
+- **Early stopping**: Monitor validation loss and stop before overfitting
+- **Learning rate schedules**: Cosine annealing, warm restarts, one-cycle policy
+- **Gradient clipping**: Stabilize training for neural nets
+- **Batch size tuning**: Larger batches for smoother gradients, smaller for regularization
+- **Data augmentation**: Add noise to training features for regularization
 
 ## Restrictions
 1. **DO NOT** edit `prepare.py`. It is the source of truth for avoiding look-ahead bias.
 2. **DO NOT** exceed the 5 minute execution timeout for `train.py`.
 3. **DO NOT** short stocks (weights must be >= 0) or use leverage (sum of weights cannot exceed 1.0).
+4. **DO NOT** use external data or APIs — only the preprocessed tensors in `data/`.
 
-Optimize aggressively. If a change improves the `val_excess_return` without breaching the drawdown constraint, keep it. Otherwise, revert the code and try a new hypothesis.
+Optimize aggressively. Make bold changes. If a change improves `val_excess_return` without breaching the drawdown constraint, keep it. Otherwise, the system will revert automatically and try a new hypothesis.

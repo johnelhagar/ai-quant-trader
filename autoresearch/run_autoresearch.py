@@ -33,6 +33,9 @@ OPENROUTER_MODELS = [
 GEMINI_DIRECT_MODEL = "gemini-2.0-flash"
 
 LOG_FILE = "experiment_logs.csv"
+EXCEL_FILE = "experiment_logs.xlsx"
+MAX_DRAWDOWN_THRESHOLD = 0.08  # Must match program.md constraint
+BEST_MODEL_DIR = "best_model"  # Permanent home for the current champion
 
 def query_gemini_direct(prompt, system_prompt=""):
     """Call Google Gemini API directly as a last-resort fallback."""
@@ -100,6 +103,134 @@ def extract_code(text):
         
     return text  # Assume the whole response is code if no blocks found
 
+def save_excel_report():
+    """Save a formatted Excel report with all experiment results and highlight the best model."""
+    if not os.path.exists(LOG_FILE):
+        return
+
+    try:
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        print("openpyxl not installed. Skipping Excel report.")
+        return
+
+    logs = pd.read_csv(LOG_FILE)
+    if logs.empty:
+        return
+
+    # Find the best valid run
+    valid = logs[(logs['Status'] == 'Completed') & (logs['val_max_drawdown'] <= MAX_DRAWDOWN_THRESHOLD)]
+    best_iter = valid.loc[valid['val_excess_return'].idxmax(), 'Iteration'] if not valid.empty else None
+
+    # Mark the best run
+    logs['Is_Best'] = logs['Iteration'] == best_iter
+
+    # Write to Excel with formatting
+    with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl') as writer:
+        logs.to_excel(writer, sheet_name='Experiment Log', index=False)
+        ws = writer.sheets['Experiment Log']
+
+        # Styling
+        header_fill = PatternFill(start_color='1F4E79', end_color='1F4E79', fill_type='solid')
+        header_font = Font(color='FFFFFF', bold=True, size=11)
+        best_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+        fail_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+        constraint_fail_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
+        thin_border = Border(
+            left=Side(style='thin'), right=Side(style='thin'),
+            top=Side(style='thin'), bottom=Side(style='thin')
+        )
+
+        # Format headers
+        for col_idx in range(1, ws.max_column + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center')
+            cell.border = thin_border
+
+        # Format data rows
+        for row_idx in range(2, ws.max_row + 1):
+            status_cell = ws.cell(row=row_idx, column=4)  # Status column
+            is_best_cell = ws.cell(row=row_idx, column=ws.max_column)  # Is_Best column
+
+            for col_idx in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center')
+
+            # Highlight best row green
+            if is_best_cell.value == True:
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=col_idx).fill = best_fill
+            # Highlight failed rows red
+            elif status_cell.value and 'Failed' in str(status_cell.value):
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=col_idx).fill = fail_fill
+            # Highlight completed but over drawdown limit yellow
+            elif status_cell.value == 'Completed':
+                dd_cell = ws.cell(row=row_idx, column=6)  # val_max_drawdown column
+                try:
+                    if dd_cell.value and float(dd_cell.value) > MAX_DRAWDOWN_THRESHOLD:
+                        for col_idx in range(1, ws.max_column + 1):
+                            ws.cell(row=row_idx, column=col_idx).fill = constraint_fail_fill
+                except (ValueError, TypeError):
+                    pass
+
+        # Auto-fit column widths
+        for col_idx in range(1, ws.max_column + 1):
+            max_len = len(str(ws.cell(row=1, column=col_idx).value or ''))
+            for row_idx in range(2, min(ws.max_row + 1, 50)):  # Sample first 50 rows
+                val = ws.cell(row=row_idx, column=col_idx).value
+                max_len = max(max_len, len(str(val or '')))
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 40)
+
+        # Add summary sheet
+        summary_data = {
+            'Metric': [
+                'Total Iterations',
+                'Completed Runs',
+                'Failed Runs',
+                'Timeout Runs',
+                'Runs Meeting Drawdown Constraint',
+                'Best Excess Return (Valid)',
+                'Best Drawdown (Valid)',
+                'Best Iteration #',
+                'Best Model Used',
+                'Drawdown Threshold',
+            ],
+            'Value': [
+                len(logs),
+                len(logs[logs['Status'] == 'Completed']),
+                len(logs[logs['Status'].str.contains('Failed', na=False)]),
+                len(logs[logs['Status'] == 'Timeout']),
+                len(valid),
+                valid['val_excess_return'].max() if not valid.empty else 'N/A',
+                valid.loc[valid['val_excess_return'].idxmax(), 'val_max_drawdown'] if not valid.empty else 'N/A',
+                int(best_iter) if best_iter is not None else 'N/A',
+                valid.loc[valid['val_excess_return'].idxmax(), 'Model'] if not valid.empty else 'N/A',
+                MAX_DRAWDOWN_THRESHOLD,
+            ]
+        }
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+        # Format summary sheet
+        ws2 = writer.sheets['Summary']
+        for col_idx in range(1, 3):
+            cell = ws2.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.border = thin_border
+        ws2.column_dimensions['A'].width = 35
+        ws2.column_dimensions['B'].width = 30
+        for row_idx in range(2, ws2.max_row + 1):
+            for col_idx in range(1, 3):
+                ws2.cell(row=row_idx, column=col_idx).border = thin_border
+
+    print(f"Excel report saved to {EXCEL_FILE}")
+
 def run_experiment(iteration_num):
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting iteration {iteration_num}")
     
@@ -117,28 +248,54 @@ def run_experiment(iteration_num):
         history_df = logs_df.tail(20)
         history = "\nRecent Experiment History (last 20 runs):\n" + history_df.to_string()
         # Also surface the single best run so the LLM knows the current champion
-        valid_logs = logs_df[(logs_df['Status'] == 'Completed') & (logs_df['val_max_drawdown'] <= 0.15)]
+        valid_logs = logs_df[(logs_df['Status'] == 'Completed') & (logs_df['val_max_drawdown'] <= MAX_DRAWDOWN_THRESHOLD)]
         if not valid_logs.empty:
             best_row = valid_logs.loc[valid_logs['val_excess_return'].idxmax()]
             history += f"\n\nCurrent Best Run (champion to beat):\n{best_row.to_string()}"
          
     # 2. Formulate Prompt
-    system_prompt = "You are an expert Quantitative Machine Learning Researcher."
+    system_prompt = """You are a world-class Quantitative AI Researcher with deep expertise in machine learning,
+feature engineering, and algorithmic trading. You have mastery of PyTorch (including Transformers, attention,
+residual networks, and custom architectures), scikit-learn, and advanced ML techniques.
+You think creatively and are not afraid to make bold architectural changes."""
     prompt = f"""
     Here are the overarching rules for your algorithmic trading portfolio optimizations:
     {program_rules}
-    
+
     {history}
-    
+
     Here is the current code for `train.py`:
     ```python
     {current_train_code}
     ```
-    
-    Propose exactly ONE targeted modification to improve `val_excess_return` while keeping `val_max_drawdown` above -0.15 (15% loss).
-    Return the ENTIRE completely valid python script for `train.py` inside a single ```python codeblock.
-    Do not omit any code or use comments like "# rest of code here". Write the full modified file.
-    Before the codeblock, briefly explain your hypothesis.
+
+    ## Your Task
+    Rewrite `train.py` to maximize `val_excess_return` while keeping `val_max_drawdown` below {MAX_DRAWDOWN_THRESHOLD} ({MAX_DRAWDOWN_THRESHOLD*100:.0f}% max drawdown).
+
+    You have FULL FREEDOM to make any changes you want. You can and should:
+    - **Change the ML algorithm entirely**: Replace the neural network with Random Forest,
+      Gradient Boosting, SVR, or any sklearn ensemble. You can also combine multiple models.
+    - **Build deep learning architectures**: Use PyTorch to build Transformers, residual networks,
+      attention-based models, Mixture of Experts, or any custom neural architecture.
+    - **Engineer new features**: Create interaction features, polynomial features, rolling statistics,
+      cross-sectional ranks, z-scores, or any derived signals from the raw tensor data.
+      The features are already standardized — you can create new ones from them.
+    - **Change the loss function**: Use ranking losses, Sharpe-based losses, custom objectives, or
+      any loss that better aligns with the portfolio selection task.
+    - **Change the training strategy**: Use cross-validation, early stopping, learning rate schedules,
+      gradient clipping, or any training technique.
+    - **Change the portfolio construction**: Modify how predictions are converted to weights —
+      use softmax weighting, risk parity, volatility targeting, or any allocation scheme.
+    - **Add market regime detection**: Build a regime classifier that goes to cash during downturns.
+    - **Make MULTIPLE changes at once** if they complement each other.
+
+    The only libraries guaranteed available are: torch, pandas, numpy, sklearn (scikit-learn).
+    Do NOT use xgboost or lightgbm unless you include a try/except fallback to sklearn.
+
+    ## Output Format
+    1. First, briefly explain your hypothesis and what changes you're making (2-4 sentences).
+    2. Then return the ENTIRE completely valid python script for `train.py` inside a single ```python codeblock.
+       Do not omit any code or use comments like "# rest of code here". Write the full modified file.
     """
     
     # 3. Get LLM Proposal
@@ -204,35 +361,55 @@ def run_experiment(iteration_num):
          "Status": status,
          "val_excess_return": val_excess_return,
          "val_max_drawdown": val_max_drawdown,
-         "Hypothesis_Summary": llm_response.split("```")[0].strip()[:200].replace('\n', ' ') # Save first 200 chars of thought process
+         "Meets_Constraint": status == "Completed" and val_max_drawdown is not None and val_max_drawdown <= MAX_DRAWDOWN_THRESHOLD,
+         "Hypothesis_Summary": llm_response.split("```")[0].strip()[:200].replace('\n', ' ')
     }
-    
+
     df = pd.DataFrame([log_entry])
     if os.path.exists(LOG_FILE):
         df.to_csv(LOG_FILE, mode='a', header=False, index=False)
     else:
         df.to_csv(LOG_FILE, index=False)
-        
+
+    # Also write formatted Excel file with all results
+    save_excel_report()
+
     print(f"Iteration Results: Status={status} | Excess Return={val_excess_return} | Drawdown={val_max_drawdown}")
-    
+
     # 7. Rollback or Keep (Greedy Search)
-    # We only keep if the run succeeded, AND improved excess return, AND drawdown is acceptable (< 15%)
-    # Let's read the best previous log entry
     best_excess = float('-inf')
     if os.path.exists(LOG_FILE):
         logs = pd.read_csv(LOG_FILE)
-        valid_logs = logs[(logs['Status'] == 'Completed') & (logs['val_max_drawdown'] <= 0.15)]
+        valid_logs = logs[(logs['Status'] == 'Completed') & (logs['val_max_drawdown'] <= MAX_DRAWDOWN_THRESHOLD)]
         if not valid_logs.empty:
             best_excess = valid_logs['val_excess_return'].max()
-            
-    if status == "Completed" and val_excess_return > best_excess and val_max_drawdown <= 0.15:
-         print("🌟 NEW BEST MODEL FOUND! Accepting changes and archiving! 🌟")
-         # Archive the winning model and script
+
+    is_new_best = (status == "Completed" and val_excess_return is not None
+                   and val_excess_return > best_excess
+                   and val_max_drawdown is not None
+                   and val_max_drawdown <= MAX_DRAWDOWN_THRESHOLD)
+
+    if is_new_best:
+         print("NEW BEST MODEL FOUND! Accepting changes and archiving!")
+         # Archive to iteration-specific directory
          archive_dir = f"saved_models/iteration_{iteration_num}"
          os.makedirs(archive_dir, exist_ok=True)
          shutil.copyfile("train.py", os.path.join(archive_dir, "train.py"))
          if os.path.exists("best_model.pt"):
              shutil.copyfile("best_model.pt", os.path.join(archive_dir, "best_model.pt"))
+         # Always keep the current champion in best_model/ for easy access
+         os.makedirs(BEST_MODEL_DIR, exist_ok=True)
+         shutil.copyfile("train.py", os.path.join(BEST_MODEL_DIR, "train.py"))
+         if os.path.exists("best_model.pt"):
+             shutil.copyfile("best_model.pt", os.path.join(BEST_MODEL_DIR, "best_model.pt"))
+         # Write metadata about the champion
+         with open(os.path.join(BEST_MODEL_DIR, "metadata.txt"), "w") as f:
+             f.write(f"Iteration: {iteration_num}\n")
+             f.write(f"Timestamp: {log_entry['Timestamp']}\n")
+             f.write(f"Model: {model_used}\n")
+             f.write(f"val_excess_return: {val_excess_return}\n")
+             f.write(f"val_max_drawdown: {val_max_drawdown}\n")
+             f.write(f"Hypothesis: {log_entry['Hypothesis_Summary']}\n")
     else:
          print("Hypothesis rejected. Reverting train.py to previous best state.")
          shutil.copyfile("train.py.best", "train.py")
@@ -240,7 +417,7 @@ def run_experiment(iteration_num):
     # Optional Discord Webhook Notification
     DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
     if DISCORD_WEBHOOK_URL:
-        emoji = "🚀" if status == "Completed" and val_excess_return > best_excess and val_max_drawdown <= 0.15 else "❌"
+        emoji = "🚀" if is_new_best else "❌"
         msg = f"{emoji} **Autoresearch Iteration {iteration_num}**\n**Status:** {status}\n**Alpha (Excess Return):** {val_excess_return}\n**Max Drawdown:** {val_max_drawdown}\n**Hypothesis:** {log_entry['Hypothesis_Summary']}"
         try:
             requests.post(DISCORD_WEBHOOK_URL, json={"content": msg}, timeout=10)
